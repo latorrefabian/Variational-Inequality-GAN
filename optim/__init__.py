@@ -1,2 +1,2 @@
-from extragradient import *
-from omd import *
+from .extragradient import *
+from .omd import *
