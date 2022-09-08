@@ -10,6 +10,7 @@ import numpy as np
 import wandb
 from tqdm import tqdm
 from autoparse import autoparse
+from typing import Tuple
 
 import models
 import utils
@@ -41,7 +42,7 @@ class WassersteinGAN(torch.nn.Module):
         self.discriminator = discriminator
         self.lambda_ = lambda_
 
-    def compute_loss(self, x_true: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, x_true: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         noise_shape = (len(x_true), self.noise_dimension)
         z = torch.randn(noise_shape, device=x_true.device)
         x_gen = self.generator(z)
