@@ -4,12 +4,9 @@ Original train extraadam script
 import pdb
 
 import torch
-from torch.autograd import Variable
 import torchvision
 import torchvision.transforms as transforms
 import numpy as np
-import argparse
-import os
 import wandb
 from tqdm import tqdm
 from autoparse import autoparse
@@ -54,8 +51,7 @@ def main(
         mode: str = 'wgan',
         distribution: str = 'normal',
         batchnorm_dis: bool = False,
-        seed: int = 1318,
-        ):
+        seed: int = 1318) -> None:
     logger = Logger()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -132,21 +128,16 @@ def main(
     pbar = tqdm(total=num_iter)
     while n_gen_update < num_iter:
         pbar.set_description('n_gen_update: ' + str(n_gen_update))
-        penalty = Variable(torch.Tensor([0.]))
-        penalty = penalty.to(device)
-        for i, (x_true, _) in enumerate(trainloader):
-            print(i)
-            x_true = Variable(x_true)
-            z = Variable(utils.sample(distribution, (len(x_true), num_latent)))
+        for _, (x_true, _) in enumerate(trainloader):
+            z = utils.sample(distribution, (len(x_true), num_latent))
             x_true = x_true.to(device)
             z = z.to(device)
             x_gen = gen(z)
             p_true, p_gen = dis(x_true), dis(x_gen)
             gen_loss = utils.compute_gan_loss(p_true, p_gen, mode=mode)
             dis_loss = - gen_loss.clone()
-            if gradient_penalty:
-                penalty = dis.get_penalty(x_true.data, x_gen.data)
-                dis_loss += gradient_penalty * penalty
+            penalty = dis.get_penalty(x_true.data, x_gen.data)
+            dis_loss += gradient_penalty * penalty
 
             for p in gen.parameters():
                 p.requires_grad = False
@@ -184,7 +175,10 @@ def main(
             n_iteration_t += 1
 
         x_gen = gen(z_examples)
-        logger.log_normalized_images(x_gen, name='my_image', step=n_gen_update)
+        logger.log_normalized_images(
+            x_gen,
+            name='my_image',
+            step=n_gen_update)
 
 
 if __name__ == '__main__':
