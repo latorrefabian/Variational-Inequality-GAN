@@ -16,6 +16,92 @@ import utils
 from optim import ExtraAdam
 
 
+class WassersteinGAN(torch.nn.Module):
+    """
+    Generative Adversarial Networks based on the Wasserstein Distance
+
+    Attributes:
+        noise_dimension: dimension of the random noise vector
+        generator: module that generates the synthetic data
+        discriminator: module corresponding to the dual variable in the dual
+          formulation of the Wasserstein Distance
+    """
+    def __init__(
+            self,
+            noise_dimension: int,
+            generator: torch.nn.Module,
+            discriminator: torch.nn.Module,
+            lambda_: float = 1.0) -> None:
+        """
+        Initializes the WGAN
+        """
+        super().__init__()
+        self.noise_dimension = noise_dimension
+        self.generator = generator
+        self.discriminator = discriminator
+        self.lambda_ = lambda_
+
+    def compute_loss(self, x_true: torch.Tensor) -> torch.Tensor:
+        noise_shape = (len(x_true), self.noise_dimension)
+        z = torch.randn(noise_shape, device=x_true.device)
+        x_gen = self.generator(z)
+        p_true, p_gen = self.discriminator(x_true), self.discriminator(x_gen)
+        gen_loss = p_true.mean() - p_gen.mean()
+
+        x_true = x_true.view_as(x_gen)
+        alpha = torch.rand((len(x_true),)+(1,)*(x_true.dim()-1), device=x_true.device)
+        x_penalty = alpha * x_true + (1 - alpha) * x_gen
+        x_penalty.requires_grad = True
+        p_penalty = self.discriminator(x_penalty)
+        gradients = torch.autograd.grad(
+                p_penalty,
+                x_penalty,
+                grad_outputs=torch.ones_like(p_penalty),
+                create_graph=True,
+                retain_graph=True,
+                only_inputs=True)[0]
+        penalty = ((gradients.view(len(x_true), -1).norm(2, 1) - 1)**2).mean()
+        dis_loss = - gen_loss.clone()
+        dis_loss += self.lambda_ * penalty
+
+        return gen_loss, dis_loss
+
+    def sample_noise(self, batch_size: int) -> torch.Tensor:
+        """
+        Obtain a batch of random normal variables on the same device as the
+        generator
+        """
+        device = next(self.generator.parameters()).device
+        return torch.randn(
+            batch_size, self.noise_dimension, device=device)
+
+    def init(self) -> None:
+        """Initialize weights"""
+        self.generator.apply(lambda x: utils.weight_init(x, mode='normal'))
+        self.discriminator.apply(lambda x: utils.weight_init(x, mode='normal'))
+
+
+class Ema:
+    def __init__(self, beta: float):
+        self.beta = beta
+        self.gen_param_avg = []
+        self.gen_param_ema = []
+
+    def add(self, wgan: WassersteinGAN, n_gen_update: int) -> None:
+        if len(self.gen_param_avg) == 0:
+            for param in wgan.generator.parameters():
+                self.gen_param_avg.append(param.data.clone())
+                self.gen_param_ema.append(param.data.clone())
+        else:
+            for j, param in enumerate(wgan.generator.parameters()):
+                self.gen_param_avg[j] = (
+                    self.gen_param_avg[j] * n_gen_update / (n_gen_update + 1.)
+                    + param.data.clone() / (n_gen_update + 1.))
+                self.gen_param_ema[j] = (
+                    self.gen_param_ema[j] * self.beta
+                    + param.data.clone() * (1 - self.beta))
+
+
 class Logger:
     def log_normalized_images(
             self,
@@ -48,8 +134,6 @@ def main(
         num_filters_dis: int = 128,
         num_filters_gen: int = 128,
         gradient_penalty: float = 10.,
-        mode: str = 'wgan',
-        distribution: str = 'normal',
         batchnorm_dis: bool = False,
         seed: int = 1318) -> None:
     logger = Logger()
@@ -94,52 +178,43 @@ def main(
         num_filters=num_filters_dis,
         batchnorm=batchnorm_dis)
 
-    gen = gen.to(device)
-    dis = dis.to(device)
+    wgan = WassersteinGAN(
+        noise_dimension=num_latent,
+        generator=gen,
+        discriminator=dis,
+        lambda_=gradient_penalty)
 
-    gen.apply(lambda x: utils.weight_init(x, mode='normal'))
-    dis.apply(lambda x: utils.weight_init(x, mode='normal'))
+    wgan = wgan.to(device)
+    wgan.init()
+
+    ema_ = Ema(beta=ema)
+    ema_.add(wgan, n_gen_update=0)
 
     dis_optimizer = ExtraAdam(
-        dis.parameters(),
+        wgan.discriminator.parameters(),
         lr=learning_rate_dis,
         betas=(beta1, beta2))
 
     gen_optimizer = ExtraAdam(
-        gen.parameters(),
+        wgan.generator.parameters(),
         lr=learning_rate_gen,
         betas=(beta1, beta2))
 
     examples, _ = next(iter(testloader))
     logger.log_normalized_images(examples, name='reference_images', step=0)
-
-    z_examples = utils.sample(distribution, (100, num_latent))
+    z_examples = utils.sample('normal', (100, num_latent))
     z_examples = z_examples.to(device)
-
-    gen_param_avg = []
-    gen_param_ema = []
-
-    for param in gen.parameters():
-        gen_param_avg.append(param.data.clone())
-        gen_param_ema.append(param.data.clone())
-
     n_gen_update = 0
     n_iteration_t = 0
     pbar = tqdm(total=num_iter)
+
     while n_gen_update < num_iter:
         pbar.set_description('n_gen_update: ' + str(n_gen_update))
         for _, (x_true, _) in enumerate(trainloader):
-            z = utils.sample(distribution, (len(x_true), num_latent))
             x_true = x_true.to(device)
-            z = z.to(device)
-            x_gen = gen(z)
-            p_true, p_gen = dis(x_true), dis(x_gen)
-            gen_loss = utils.compute_gan_loss(p_true, p_gen, mode=mode)
-            dis_loss = - gen_loss.clone()
-            penalty = dis.get_penalty(x_true.data, x_gen.data)
-            dis_loss += gradient_penalty * penalty
+            gen_loss, dis_loss = wgan.compute_loss(x_true)
 
-            for p in gen.parameters():
+            for p in wgan.generator.parameters():
                 p.requires_grad = False
             dis_optimizer.zero_grad()
             dis_loss.backward(retain_graph=True)
@@ -149,7 +224,7 @@ def main(
             else:
                 dis_optimizer.step()
 
-            for p in gen.parameters():
+            for p in wgan.generator.parameters():
                 p.requires_grad = True
 
             for p in dis.parameters():
@@ -163,18 +238,14 @@ def main(
                 n_gen_update += 1
                 pbar.update(1)
                 gen_optimizer.step()
-                for j, param in enumerate(gen.parameters()):
-                    gen_param_avg[j] = (
-                            gen_param_avg[j] * n_gen_update / (n_gen_update+1.)
-                            + param.data.clone() / (n_gen_update+1.))
-                    gen_param_ema[j] = gen_param_ema[j]*ema+ param.data.clone()*(1-ema)
+                ema_.add(wgan, n_gen_update=n_gen_update)
 
             for p in dis.parameters():
                 p.requires_grad = True
 
             n_iteration_t += 1
 
-        x_gen = gen(z_examples)
+        x_gen = wgan.generator(z_examples)
         logger.log_normalized_images(
             x_gen,
             name='my_image',
@@ -186,7 +257,7 @@ if __name__ == '__main__':
     wandb.init(
         project='fairgan_cifar10',
         config=args,
-        name='var_ineq_gan',
+        name='var_ineq_gan_2',
         dir='.wandb')
     main(**args)
 
