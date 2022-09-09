@@ -266,7 +266,7 @@ if __name__ == '__main__':
     wandb.init(
         project='fairgan_cifar10',
         config=args,
-        name='var_ineq_gan_2',
+        name='var_ineq_gan_3',
         dir='.wandb')
     main(**args)
 
