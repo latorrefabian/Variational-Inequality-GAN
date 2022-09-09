@@ -195,6 +195,12 @@ def main(
     wgan = wgan.to(device)
     wgan.init()
 
+    # Dry run to initialize Lazy Modules, if there are any
+    for data, label in trainloader:
+        data, label = data.to(device), label.to(device)
+        wgan.compute_loss(data, label)
+        break
+
     ema_ = Ema(beta=ema)
     ema_.add(wgan, n_gen_update=0)
 

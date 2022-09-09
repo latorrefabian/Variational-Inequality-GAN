@@ -75,7 +75,7 @@ class ResNet32Generator(nn.Module):
             number_of_classes: Optional[int] = None):
         super(ResNet32Generator, self).__init__()
         self.num_filters = num_filters
-        self.input = nn.Linear(n_in, 4*4*num_filters)
+        self.input = nn.LazyLinear(4*4*num_filters)
         self.network = [
             ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
             ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
