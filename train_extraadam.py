@@ -57,7 +57,7 @@ class WassersteinGAN(torch.nn.Module):
         x_true = x_true.view_as(x_gen)
         alpha = torch.rand(
             (len(x_true),) + (1,) * (x_true.dim() - 1), device=x_true.device)
-        x_penalty = alpha * x_true + (1 - alpha) * x_gen
+        x_penalty = (alpha * x_true + (1 - alpha) * x_gen).clone().detach()
         x_penalty.requires_grad = True
         p_penalty = self.discriminator(x_penalty)
         gradients = torch.autograd.grad(
