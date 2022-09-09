@@ -30,7 +30,8 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
 
-    def forward(self):
+    def forward(self, x, labels):
+        _ = (x, labels)  # unused
         raise NotImplementedError()
 
     def get_penalty(self, x_true, x_gen):

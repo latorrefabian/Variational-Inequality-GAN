@@ -24,9 +24,9 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import grad, Variable
 from .discriminator import Discriminator
+from typing import Optional
+
 
 class ResBlock(nn.Module):
     def __init__(self, num_filters, resample=None, batchnorm=True, inplace=False):
@@ -58,54 +58,108 @@ class ResBlock(nn.Module):
 
         self.block = nn.Sequential(*self.block)
 
-
     def forward(self, x):
         shortcut = x
         if not self.conv_shortcut is None:
             shortcut = self.conv_shortcut(x)
         return shortcut + self.block(x)
 
+
 class ResNet32Generator(nn.Module):
-    def __init__(self, n_in, n_out, num_filters=128, batchnorm=True):
+    def __init__(
+            self,
+            n_in: int,
+            n_out: int,
+            num_filters: int = 128,
+            batchnorm: bool = True,
+            number_of_classes: Optional[int] = None):
         super(ResNet32Generator, self).__init__()
         self.num_filters = num_filters
-
         self.input = nn.Linear(n_in, 4*4*num_filters)
-        self.network = [ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
-                        ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
-                        ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True)]
+        self.network = [
+            ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
+            ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True),
+            ResBlock(num_filters, resample='up', batchnorm=batchnorm, inplace=True)]
         if batchnorm:
             self.network.append(nn.BatchNorm2d(num_filters))
-        self.network += [nn.ReLU(True),
-                        nn.Conv2d(num_filters, 3, 3, padding=1),
-                        nn.Tanh()]
+        self.network += [
+            nn.ReLU(True),
+            nn.Conv2d(num_filters, 3, 3, padding=1),
+            nn.Tanh()]
 
         self.network = nn.Sequential(*self.network)
+        if number_of_classes is not None:
+            self.label_embedding = LabelEmbedding(
+                number_of_classes=number_of_classes,
+                embedding_dimension=[n_in])
+        else:
+            self.label_embedding = lambda x, _: x
 
-    def forward(self, z):
-        x = self.input(z).view(len(z), self.num_filters, 4, 4)
+    def forward(self, noise, labels=None):
+        if labels is not None:
+            noise = self.label_embedding(noise, labels)
+        x = self.input(noise).view(len(noise), self.num_filters, 4, 4)
         return self.network(x)
 
-class ResNet32Discriminator(Discriminator):
-    def __init__(self, n_in, n_out, num_filters=128, batchnorm=False):
+
+class ResNet32Discriminator(nn.Module):
+    def __init__(
+            self,
+            n_in: int,
+            n_out: int,
+            num_filters: int = 128,
+            batchnorm: bool = False,
+            number_of_classes: Optional[int] = None):
         super(ResNet32Discriminator, self).__init__()
-
-        self.block1 = nn.Sequential(nn.Conv2d(3, num_filters, 3, padding=1),
-                                    nn.ReLU(),
-                                    nn.Conv2d(num_filters, num_filters, 3, stride=2, padding=1))
-
-        self.shortcut1 = nn.Conv2d(3, num_filters, 1, stride=2)
-
-        self.network = nn.Sequential(ResBlock(num_filters, resample='down', batchnorm=batchnorm),
-                                    ResBlock(num_filters, resample=None, batchnorm=batchnorm),
-                                    ResBlock(num_filters, resample=None, batchnorm=batchnorm),
-                                    nn.ReLU())
+        self.block1 = nn.Sequential(
+            nn.LazyConv2d(num_filters, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(num_filters, num_filters, 3, stride=2, padding=1))
+        self.shortcut1 = nn.LazyConv2d(num_filters, 1, stride=2)
+        self.network = nn.Sequential(
+            ResBlock(num_filters, resample='down', batchnorm=batchnorm),
+            ResBlock(num_filters, resample=None, batchnorm=batchnorm),
+            ResBlock(num_filters, resample=None, batchnorm=batchnorm),
+            nn.ReLU())
         self.output = nn.Linear(num_filters, 1)
+        if number_of_classes is not None:
+            self.label_embedding = LabelEmbedding(
+                number_of_classes=number_of_classes,
+                embedding_dimension=[1, 32, 32])
+        else:
+            self.label_embedding = lambda x, _: x
 
-    def forward(self, x):
+    def forward(self, x, labels=None):
+        if labels is not None:
+            x = self.label_embedding(x, labels)
         y = self.block1(x)
         y = self.shortcut1(x) + y
         y = self.network(y).mean(-1).mean(-1)
         y = self.output(y)
 
         return y
+
+
+class LabelEmbedding(nn.Module):
+    """
+    Embedding for an integer label in a supervised dataset
+
+    Attributes:
+        embedding: tensor containing the embeddings, one for each label.
+        module: module that will receive the data and the embedding of
+          the label as input.
+    """
+    def __init__(
+            self,
+            number_of_classes: int,
+            embedding_dimension: list[int]) -> None:
+        """Initializes the Label Embedding"""
+        super().__init__()
+        parameter_dimension = [
+            number_of_classes, *embedding_dimension]
+        self.embedding = nn.Parameter(
+            torch.randn(*parameter_dimension))
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """Stacks the data and the embedding of the label"""
+        return torch.hstack((x, self.embedding[y]))

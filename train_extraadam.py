@@ -42,15 +42,21 @@ class WassersteinGAN(torch.nn.Module):
         self.discriminator = discriminator
         self.lambda_ = lambda_
 
-    def compute_loss(self, x_true: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def compute_loss(
+            self,
+            x_true: torch.Tensor,
+            labels: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute the generator/discriminator loss of the WGAN"""
         noise_shape = (len(x_true), self.noise_dimension)
-        z = torch.randn(noise_shape, device=x_true.device)
-        x_gen = self.generator(z)
-        p_true, p_gen = self.discriminator(x_true), self.discriminator(x_gen)
+        noise = torch.randn(noise_shape, device=x_true.device)
+        x_gen = self.generator(noise, labels)
+        p_true = self.discriminator(x_true, labels)
+        p_gen = self.discriminator(x_gen, labels)
         gen_loss = p_true.mean() - p_gen.mean()
 
         x_true = x_true.view_as(x_gen)
-        alpha = torch.rand((len(x_true),)+(1,)*(x_true.dim()-1), device=x_true.device)
+        alpha = torch.rand(
+            (len(x_true),) + (1,) * (x_true.dim() - 1), device=x_true.device)
         x_penalty = alpha * x_true + (1 - alpha) * x_gen
         x_penalty.requires_grad = True
         p_penalty = self.discriminator(x_penalty)
@@ -61,10 +67,9 @@ class WassersteinGAN(torch.nn.Module):
                 create_graph=True,
                 retain_graph=True,
                 only_inputs=True)[0]
-        penalty = ((gradients.view(len(x_true), -1).norm(2, 1) - 1)**2).mean()
+        penalty = ((gradients.view(len(x_true), -1).norm(2, 1) - 1) ** 2).mean()
         dis_loss = - gen_loss.clone()
         dis_loss += self.lambda_ * penalty
-
         return gen_loss, dis_loss
 
     def sample_noise(self, batch_size: int) -> torch.Tensor:
@@ -171,13 +176,15 @@ def main(
         n_in=num_latent,
         n_out=3,
         num_filters=num_filters_gen,
-        batchnorm=True)
+        batchnorm=True,
+        number_of_classes=10)
 
     dis = models.ResNet32Discriminator(
         n_in=3,
         n_out=1,
         num_filters=num_filters_dis,
-        batchnorm=batchnorm_dis)
+        batchnorm=batchnorm_dis,
+        number_of_classes=10)
 
     wgan = WassersteinGAN(
         noise_dimension=num_latent,
@@ -203,17 +210,18 @@ def main(
 
     examples, _ = next(iter(testloader))
     logger.log_normalized_images(examples, name='reference_images', step=0)
-    z_examples = utils.sample('normal', (100, num_latent))
-    z_examples = z_examples.to(device)
+    z_examples = utils.sample('normal', (100, num_latent)).to(device)
+    label_examples = torch.arange(10).repeat(10).to(device)
     n_gen_update = 0
     n_iteration_t = 0
     pbar = tqdm(total=num_iter)
 
     while n_gen_update < num_iter:
         pbar.set_description('n_gen_update: ' + str(n_gen_update))
-        for _, (x_true, _) in enumerate(trainloader):
+        for _, (x_true, labels) in enumerate(trainloader):
             x_true = x_true.to(device)
-            gen_loss, dis_loss = wgan.compute_loss(x_true)
+            labels = labels.to(device)
+            gen_loss, dis_loss = wgan.compute_loss(x_true, labels)
 
             for p in wgan.generator.parameters():
                 p.requires_grad = False
@@ -246,7 +254,7 @@ def main(
 
             n_iteration_t += 1
 
-        x_gen = wgan.generator(z_examples)
+        x_gen = wgan.generator(z_examples, label_examples)
         logger.log_normalized_images(
             x_gen,
             name='my_image',
